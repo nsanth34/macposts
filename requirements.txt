@@ -1,0 +1,13 @@
+pandas
+ipykernel
+requests
+geopandas
+matplotlib
+seaborn
+networkx
+bidict
+torch
+scikit-learn
+folium
+contextily
+mapclassify
