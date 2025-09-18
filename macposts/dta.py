@@ -9,8 +9,11 @@ the core `libmacposts' and the user.
 
 """
 
-import numpy as np
+from collections.abc import Iterable
+
 import _macposts_ext as _ext
+
+from .backends import get_backend_state, to_output_array
 
 
 # XXX: I would like to use a common base class instead.
@@ -39,21 +42,45 @@ class _CommonMixin:
         super().register_links(links)
 
     def _get_ccs(self, link_func, links):
+        """Retrieve cumulative curves using the active array backend."""
+
         if links is None:
-            links = self.registered_links
-        ccs = np.empty((self.get_cur_loading_interval() + 1, len(links)))
-        ccs[:] = np.nan
-        for col, link in enumerate(links):
-            cc = link_func(link)
-            ticks = cc[:, 0].astype(int)
-            ccs[ticks, col] = cc[:, 1]
-        # Forward fill NaNs
-        # Ref: https://stackoverflow.com/a/41191127
-        mask = np.isnan(ccs)
-        idxs = np.where(~mask, np.arange(mask.shape[0])[:, None], 0)
-        np.maximum.accumulate(idxs, axis=0, out=idxs)
-        ccs[mask] = ccs[idxs[mask], np.nonzero(mask)[1]]
-        return ccs
+            link_ids = tuple(self.registered_links)
+        elif isinstance(links, Iterable) and not isinstance(links, (str, bytes)):
+            link_ids = tuple(links)
+        else:
+            link_ids = (links,)
+
+        state = get_backend_state()
+        xp = state.backend.module
+
+        num_rows = int(self.get_cur_loading_interval()) + 1
+        num_cols = len(link_ids)
+        ccs = xp.full((num_rows, num_cols), xp.nan, dtype=xp.float64)
+
+        for col, link in enumerate(link_ids):
+            cc = xp.asarray(link_func(link))
+            if cc.size == 0:
+                continue
+            ticks = cc[:, 0].astype(xp.int64, copy=False)
+            values = cc[:, 1].astype(xp.float64, copy=False)
+            ccs[ticks, col] = values
+
+        mask = xp.isnan(ccs)
+        if state.backend.uses_gpu:
+            has_missing = bool(mask.any().item())
+        else:
+            has_missing = bool(mask.any())
+        if has_missing:
+            # Forward fill NaNs to keep curves continuous. The implementation is
+            # expressed purely in terms of the active array backend so it maps
+            # naturally to both NumPy and CuPy.
+            row_idx = xp.arange(num_rows, dtype=xp.int64)[:, None]
+            idxs = xp.where(~mask, row_idx, 0)
+            idxs = xp.maximum.accumulate(idxs, axis=0)
+            ccs[mask] = ccs[idxs[mask], xp.nonzero(mask)[1]]
+
+        return to_output_array(ccs, state)
 
 
 class Dta(_CommonMixin, _ext.Dta):
@@ -69,7 +96,10 @@ class Dta(_CommonMixin, _ext.Dta):
         it will be treated as a list of one element. However, that is not
         recommended.
 
-        Return a Numpy array of shape (CURRENT-INTERVAL, NUM-LINKS).
+        Return an array of shape (CURRENT-INTERVAL, NUM-LINKS). By default this
+        is a NumPy array; when GPU arrays are requested via
+        :func:`macposts.backends.configure_array_backend` the result may stay on
+        the device.
 
         """
         return self._get_ccs(self.get_link_in_cc, links)
@@ -84,7 +114,10 @@ class Dta(_CommonMixin, _ext.Dta):
         it will be treated as a list of one element. However, that is not
         recommended.
 
-        Return a Numpy array of shape (CURRENT-INTERVAL, NUM-LINKS).
+        Return an array of shape (CURRENT-INTERVAL, NUM-LINKS). By default this
+        is a NumPy array; when GPU arrays are requested via
+        :func:`macposts.backends.configure_array_backend` the result may stay on
+        the device.
 
         """
         return self._get_ccs(self.get_link_out_cc, links)
@@ -101,7 +134,10 @@ class Mcdta(_CommonMixin, _ext.Mcdta):
         retrieved. It could also be None, in which case all registered links
         will be used.
 
-        Return a Numpy array of shape (CURRENT-INTERVAL, NUM-LINKS).
+        Return an array of shape (CURRENT-INTERVAL, NUM-LINKS). By default this
+        is a NumPy array; when GPU arrays are requested via
+        :func:`macposts.backends.configure_array_backend` the result may stay on
+        the device.
 
         """
         return self._get_ccs(self.get_car_link_in_cc, links)
@@ -114,7 +150,10 @@ class Mcdta(_CommonMixin, _ext.Mcdta):
         retrieved. It could also be None, in which case all registered links
         will be used.
 
-        Return a Numpy array of shape (CURRENT-INTERVAL, NUM-LINKS).
+        Return an array of shape (CURRENT-INTERVAL, NUM-LINKS). By default this
+        is a NumPy array; when GPU arrays are requested via
+        :func:`macposts.backends.configure_array_backend` the result may stay on
+        the device.
 
         """
         return self._get_ccs(self.get_car_link_out_cc, links)
@@ -127,7 +166,10 @@ class Mcdta(_CommonMixin, _ext.Mcdta):
         retrieved. It could also be None, in which case all registered links
         will be used.
 
-        Return a Numpy array of shape (CURRENT-INTERVAL, NUM-LINKS).
+        Return an array of shape (CURRENT-INTERVAL, NUM-LINKS). By default this
+        is a NumPy array; when GPU arrays are requested via
+        :func:`macposts.backends.configure_array_backend` the result may stay on
+        the device.
 
         """
         return self._get_ccs(self.get_truck_link_in_cc, links)
@@ -140,7 +182,10 @@ class Mcdta(_CommonMixin, _ext.Mcdta):
         retrieved. It could also be None, in which case all registered links
         will be used.
 
-        Return a Numpy array of shape (CURRENT-INTERVAL, NUM-LINKS).
+        Return an array of shape (CURRENT-INTERVAL, NUM-LINKS). By default this
+        is a NumPy array; when GPU arrays are requested via
+        :func:`macposts.backends.configure_array_backend` the result may stay on
+        the device.
 
         """
         return self._get_ccs(self.get_truck_link_out_cc, links)
